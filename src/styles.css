@@ -1,0 +1,15 @@
+html,
+body {
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.App {
+  font-family: sans-serif;
+}
+
+.emailSelector .MuiInput-formControl {
+  font-size: 0.8rem;
+}

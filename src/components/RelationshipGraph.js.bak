@@ -1,0 +1,294 @@
+import React from 'react';
+import * as d3 from 'd3';
+
+const linkDegreeColor = ['#000', '#999', '#999', '#aaa'];
+const nodeReferrerColor = '#0a0';
+
+export default class RelationshipGraph extends React.Component {
+  static defaultProps = {
+    width: 960,
+    height: 550,
+    firstDegreeWeight: 5,
+    secondDegreeWeight: 3,
+    thirdDegreeWeight: 1,
+    includesOnlyFirstDegree: true,
+    isEmailLabelVisible: true,
+    linkDistanceFactor: 50,
+  };
+
+  state = {
+    processedData: [],
+    emails: [],
+    emailsMap: {},
+  };
+
+  constructor(props) {
+    super(props);
+
+    this.canvasRef = React.createRef();
+  }
+
+  async componentDidMount() {
+    await this.processData(this.props.data);
+    this.constructGraph();
+  }
+
+  async componentDidUpdate(prevProps) {
+    if (
+      JSON.stringify(this.props.data || {}) !==
+        JSON.stringify(prevProps.data || {}) ||
+      this.props.firstDegreeWeight !== prevProps.firstDegreeWeight ||
+      this.props.secondDegreeWeight !== prevProps.secondDegreeWeight ||
+      this.props.thirdDegreeWeight !== prevProps.thirdDegreeWeight
+    ) {
+      await this.processData(this.props.data);
+      this.constructGraph();
+    }
+  }
+
+  constructGraph() {
+    const { linkDistanceFactor } = this.props;
+    const { processedData, emails, emailsMap } = this.state;
+    const nodes = [];
+
+    emails.forEach((email, index) => {
+      nodes.push({
+        id: email,
+        email: {
+          key: email,
+          label: emailsMap[email],
+        },
+      });
+    });
+
+    const links = [];
+    processedData.forEach((item) => {
+      links.push({
+        source: item.node1.key,
+        target: item.node2.key,
+        ...item,
+      });
+    });
+
+    const simulation = d3
+      .forceSimulation(nodes)
+      .force(
+        'link',
+        d3
+          .forceLink(links)
+          .id((d) => d.id)
+          .strength((d) => d.weight / 10)
+          .distance((d) => (d.weight / (4 - d.degree)) * linkDistanceFactor),
+      )
+      .force('charge', d3.forceManyBody())
+      .on('tick', this.handleSimulationTick);
+
+    const canvas = this.canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    d3.select(canvas).call(
+      d3
+        .drag()
+        .container(canvas)
+        .subject(this.getDragSubject)
+        .on('start', this.handleDragStart)
+        .on('drag', this.handleDrag)
+        .on('end', this.handleDragEnd),
+    );
+
+    this.nodes = nodes;
+    this.links = links;
+    this.simulation = simulation;
+    this.canvas = canvas;
+    this.context = context;
+
+    this.handleSimulationTick();
+  }
+
+  addRelationship(array, node1Label, node2Label, weight = 0, degree = 0) {
+    if (!node1Label || !node2Label) {
+      return;
+    }
+    let node1LabelLC = node1Label.toLowerCase();
+    let node2LabelLC = node2Label.toLowerCase();
+    if (node1LabelLC > node2LabelLC) {
+      const temp = node1Label;
+      node1Label = node2Label;
+      node2Label = temp;
+      node1LabelLC = node1Label.toLowerCase();
+      node2LabelLC = node2Label.toLowerCase();
+    }
+
+    array.push({
+      key: `${node1LabelLC}~${node2LabelLC}`,
+      node1: {
+        key: node1LabelLC,
+        label: node1Label,
+      },
+      node2: {
+        key: node2LabelLC,
+        label: node2Label,
+      },
+      weight,
+      degree,
+    });
+  }
+
+  extractRelationships(item) {
+    const {
+      firstDegreeWeight,
+      secondDegreeWeight,
+      includesOnlyFirstDegree,
+    } = this.props;
+    const relationships = [];
+    this.addRelationship(
+      relationships,
+      item.referrer,
+      item.referral1,
+      firstDegreeWeight,
+      1,
+    );
+    this.addRelationship(
+      relationships,
+      item.referrer,
+      item.referral2,
+      firstDegreeWeight,
+      1,
+    );
+
+    if (!includesOnlyFirstDegree) {
+      this.addRelationship(
+        relationships,
+        item.referral1,
+        item.referral2,
+        secondDegreeWeight,
+        2,
+      );
+    }
+    return relationships;
+  }
+
+  processData = async (data) => {
+    return new Promise((resolve) => {
+      const dataMap = {};
+      const emailsMap = {};
+
+      (data || []).forEach((item) => {
+        const relationships = this.extractRelationships(item);
+        relationships.forEach((relationship) => {
+          const { key, node1, node2 } = relationship;
+          if (!dataMap[key]) {
+            dataMap[key] = { key, node1, node2, weight: 0 };
+          }
+          dataMap[key].weight += relationship.weight;
+          dataMap[key].degree = relationship.degree;
+          if (!emailsMap[node1.key]) {
+            emailsMap[node1.key] = node1.label;
+          }
+          if (!emailsMap[node2.key]) {
+            emailsMap[node2.key] = node2.label;
+          }
+        });
+      });
+
+      const processedData = Object.keys(dataMap).map((key) => dataMap[key]);
+      const emails = Object.keys(emailsMap).map((key) => emailsMap[key]);
+
+      this.setState(
+        {
+          processedData,
+          dataMap,
+          emails,
+          emailsMap,
+        },
+        resolve,
+      );
+    });
+  };
+
+  drawLink = (d) => {
+    const { context } = this;
+    context.beginPath();
+    context.lineWidth = 3 - d.degree;
+    context.strokeStyle = linkDegreeColor[d.degree];
+    context.setLineDash(d.degree > 1 ? [5, 5] : []);
+    context.moveTo(d.source.x, d.source.y);
+    context.lineTo(d.target.x, d.target.y);
+    context.stroke();
+  };
+
+  drawNode = (d, index) => {
+    const { context } = this;
+    context.moveTo(d.x + 3, d.y);
+    context.beginPath();
+    context.arc(d.x, d.y, 13, 0, 2 * Math.PI);
+    context.fillStyle = '#fff';
+    context.fill();
+    context.strokeStyle = index === 0 ? nodeReferrerColor : '#666';
+    context.setLineDash([]);
+    context.stroke();
+    context.moveTo(d.x + 3, d.y);
+    context.font = '12px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillStyle = index === 0 ? nodeReferrerColor : '#333';
+    context.fillText(index, d.x, d.y);
+
+    // email label
+    const { isEmailLabelVisible } = this.props;
+    if (isEmailLabelVisible) {
+      context.font = '11px Arial';
+      context.fillText(d.email.label, d.x, d.y - 20);
+    }
+  };
+
+  handleSimulationTick = () => {
+    const { context, nodes, links, drawNode, drawLink } = this;
+    const { width, height } = this.props;
+
+    context.clearRect(0, 0, width, height);
+    context.save();
+    context.translate(width / 2, height / 2);
+
+    links.forEach(drawLink);
+
+    nodes.forEach(drawNode);
+
+    context.restore();
+  };
+
+  getDragSubject = () => {
+    const { width, height } = this.props;
+    return this.simulation.find(
+      d3.event.x - width / 2,
+      d3.event.y - height / 2,
+    );
+  };
+
+  handleDragStart = () => {
+    if (!d3.event.active) this.simulation.alphaTarget(0.3).restart();
+    d3.event.subject.fx = d3.event.subject.x;
+    d3.event.subject.fy = d3.event.subject.y;
+  };
+
+  handleDrag = () => {
+    d3.event.subject.fx = d3.event.x;
+    d3.event.subject.fy = d3.event.y;
+  };
+
+  handleDragEnd = () => {
+    if (!d3.event.active) this.simulation.alphaTarget(0);
+    d3.event.subject.fx = null;
+    d3.event.subject.fy = null;
+  };
+
+  render() {
+    const { width, height } = this.props;
+
+    return (
+      <div className="relationship-graph">
+        <canvas ref={this.canvasRef} width={width} height={height} />
+      </div>
+    );
+  }
+}
